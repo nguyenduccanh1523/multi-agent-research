@@ -1,0 +1,9 @@
+export enum AgentTaskStatus {
+  PENDING = 'PENDING',
+  READY = 'READY',
+  RUNNING = 'RUNNING',
+  RETRYING = 'RETRYING',
+  SUCCEEDED = 'SUCCEEDED',
+  FAILED = 'FAILED',
+  SKIPPED = 'SKIPPED',
+}
