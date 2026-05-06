@@ -1,88 +1,109 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
+import { LlmService } from '../llm/llm.service';
+import { PromptService } from '../llm/prompt.service';
+import { ResearchDataRepository } from '../orchestrator/research-data.repository';
+import { BaseAgent } from './base-agent.interface';
 import {
   AgentRunInput,
   AgentRunOutput,
 } from '../orchestrator/types/agent-run.types';
-import { BaseAgent } from './base-agent.interface';
 
 @Injectable()
 export class ScoringAgent implements BaseAgent {
   agentType = AgentType.SCORING;
 
+  constructor(
+    private readonly researchDataRepo: ResearchDataRepository,
+    private readonly llm: LlmService,
+    private readonly prompts: PromptService,
+  ) {}
+
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
-
-    await this.fakeDelay(400);
 
     const profile = input.previousOutputs[AgentType.COMPANY_PROFILE_DB];
     const overview = input.previousOutputs[AgentType.COMPANY_RESEARCH_OVERVIEW];
 
-    let score = 40;
+    const researchCompanyId = Number(overview.researchCompanyId);
 
-    if (profile) score += 20;
-    if (overview) score += 20;
-    if (profile?.industry) score += 5;
-    if (profile?.partners?.length) score += 5;
-    if (profile?.competitors?.length) score += 5;
-    if (overview?.keySignals?.length) score += 5;
+    const prompt = this.prompts.scoringPrompt();
 
-    score = Math.min(score, 100);
+    const result = await this.llm.json({
+      provider: 'openai',
+      level: input.researchInput.level,
+      system: prompt.system,
+      user: JSON.stringify({
+        primary_company: {
+          company_name: profile.companyName,
+          website: profile.website,
+          products: profile.productInfor ?? profile.products,
+          documents_ai: profile.documentsAi,
+          partners: profile.partners,
+          competitors: profile.competitors,
+          profile_context: profile.profileEmbeddingContext,
+        },
+        research_company: {
+          company_name: overview.companyName,
+          website: overview.website,
+          role: overview.role,
+          focus_on: overview.focusOn,
+          corporate_initiatives: overview.corporateInitiatives,
+          tech_stack: overview.techStack,
+          trigger_events: overview.triggerEvents,
+          financial_capacity: overview.financialCapacity,
+          business_data: overview.businessData,
+          research_context: overview.researchEmbeddingContext,
+        },
+      }),
+    });
 
-    const rawOutput = {
-      agent: this.agentType,
-      companyName:
-        profile?.companyName ??
-        overview?.companyName ??
-        input.researchInput.name ??
-        null,
-      website:
-        profile?.website ??
-        overview?.website ??
-        input.researchInput.url ??
-        null,
-      score,
-      level: score >= 80 ? 'HIGH' : score >= 60 ? 'MEDIUM' : 'LOW',
-      confidence: profile && overview ? 0.8 : 0.6,
-      explanation: [
-        profile
-          ? 'Company Profile DB output is available.'
-          : 'Company Profile DB output is missing.',
-        overview
-          ? 'Company Research Overview output is available.'
-          : 'Company Research Overview output is missing.',
-        'Scoring is calculated only from Company Profile DB and Company Research Overview outputs.',
-      ],
-      scoringBasis: {
-        hasCompanyProfile: Boolean(profile),
-        hasOverview: Boolean(overview),
-        hasIndustry: Boolean(profile?.industry),
-        partnerCount: profile?.partners?.length ?? 0,
-        competitorCount: profile?.competitors?.length ?? 0,
-        overviewSignalCount: overview?.keySignals?.length ?? 0,
-      },
-    };
+    const fit = result.fit_breakdown ?? {};
+
+    const score = await this.researchDataRepo.upsertResearchScore({
+      researchCompanyId,
+      needFit: fit.need_fit?.score ?? null,
+      needFitSummary: fit.need_fit?.summary ?? null,
+      solutionFit: fit.solution_fit?.score ?? null,
+      solutionFitSummary: fit.solution_fit?.summary ?? null,
+      initiativeFit: fit.initiative_fit?.score ?? null,
+      initiativeFitSummary: fit.initiative_fit?.summary ?? null,
+      executionFit: fit.execution_fit?.score ?? null,
+      executionFitSummary: fit.execution_fit?.summary ?? null,
+      riskFit: fit.risk_fit?.score ?? null,
+      riskFitSummary: fit.risk_fit?.summary ?? null,
+      overallScore: result.collaboration_fit_score ?? null,
+      summary: result.summary ?? null,
+    });
 
     return {
-      rawOutput,
+      rawOutput: {
+        agent: this.agentType,
+        result,
+        score,
+      },
       normalizedOutput: {
-        companyName: rawOutput.companyName,
-        website: rawOutput.website,
-        score: rawOutput.score,
-        level: rawOutput.level,
-        confidence: rawOutput.confidence,
-        explanation: rawOutput.explanation,
-        scoringBasis: rawOutput.scoringBasis,
+        collaborationFitScore: result.collaboration_fit_score ?? null,
+        relationshipType: result.relationship_type ?? null,
+        summary: result.summary ?? null,
+        positiveFactors: result.positive_factors ?? [],
+        negativeFactors: result.negative_factors ?? [],
+        finalAssessment: result.final_assessment ?? null,
+        fitBreakdown: result.fit_breakdown ?? {},
+        savedScore: {
+          researchScoreId: score.researchScoreId,
+          overallScore: score.overallScore,
+          summary: score.summary,
+        },
       },
       metadata: {
-        model: 'mock-scoring-agent',
+        model:
+          input.researchInput.level === 'simple'
+            ? process.env.OPENAI_MODEL_SIMPLE
+            : process.env.OPENAI_MODEL_DETAIL,
         latencyMs: Date.now() - started,
       },
     };
-  }
-
-  private fakeDelay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

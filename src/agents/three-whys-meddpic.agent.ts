@@ -1,75 +1,97 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
+import { LlmService } from '../llm/llm.service';
+import { PromptService } from '../llm/prompt.service';
+import { ResearchDataRepository } from '../orchestrator/research-data.repository';
+import { BaseAgent } from './base-agent.interface';
 import {
   AgentRunInput,
   AgentRunOutput,
 } from '../orchestrator/types/agent-run.types';
-import { BaseAgent } from './base-agent.interface';
 
 @Injectable()
 export class ThreeWhysMeddpicAgent implements BaseAgent {
   agentType = AgentType.THREE_WHYS_MEDDPIC;
 
+  constructor(
+    private readonly researchDataRepo: ResearchDataRepository,
+    private readonly llm: LlmService,
+    private readonly prompts: PromptService,
+  ) {}
+
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
-
-    await this.fakeDelay(700);
 
     const profile = input.previousOutputs[AgentType.COMPANY_PROFILE_DB];
     const overview = input.previousOutputs[AgentType.COMPANY_RESEARCH_OVERVIEW];
 
-    const companyName =
-      profile?.companyName ??
-      overview?.companyName ??
-      input.researchInput.name ??
-      'Unknown Company';
+    const researchCompanyId = Number(overview.researchCompanyId);
+    const level = input.researchInput.level ?? 'detail';
 
-    const rawOutput = {
-      agent: this.agentType,
-      companyName,
-      basedOn: {
-        hasCompanyProfile: Boolean(profile),
-        hasOverview: Boolean(overview),
-      },
-      threeWhys: [
-        `Why now: ${companyName} may need better research and sales qualification.`,
-        `Why this solution: Multi-agent research can combine profile, overview, MEDDPIC and scoring.`,
-        `Why us: The system can generate structured research output from multiple agents.`,
-      ],
-      meddpic: {
-        metrics: [
-          'Time saved in research',
-          'Higher lead qualification accuracy',
-        ],
-        economicBuyer: input.researchInput.jobtitle ?? 'Unknown',
-        decisionCriteria: ['Business pain', 'Fit score', 'Contactability'],
-        decisionProcess: 'Needs validation',
-        paperProcess: 'Unknown',
-        identifyPain: [
-          'Manual company research takes time',
-          'Sales context is fragmented',
-          'Qualification criteria are not centralized',
-        ],
-        champion: 'Unknown',
-      },
-    };
+    const prompt = this.prompts.threeWhysMeddpicPrompt(level);
+
+    const result = await this.llm.json({
+      provider: 'openai',
+      level,
+      system: prompt.system,
+      user: JSON.stringify({
+        target_company: {
+          focus_area: overview.focusOn,
+          company_name: overview.companyName,
+          website: overview.website,
+          corporate_initiatives: overview.corporateInitiatives,
+          trigger_events: overview.triggerEvents,
+          technology_stack: overview.techStack,
+          financial_capacity: overview.financialCapacity,
+          business_data: overview.businessData,
+        },
+        our_company: {
+          company_name: profile.companyName,
+          website: profile.website,
+          profile: profile.profileEmbeddingContext,
+          documents_ai: profile.documentsAi,
+          product_information: profile.productInfor ?? profile.products,
+          competitor_information: profile.competitors,
+          partner_information: profile.partners,
+        },
+        role: overview.role ?? input.researchInput.jobtitle,
+        rag_context: {
+          profile_context: profile.profileEmbeddingContext,
+          research_context: overview.researchEmbeddingContext,
+        },
+      }),
+    });
+
+    const comparison = await this.researchDataRepo.upsertThreeWhysMeddpic({
+      researchCompanyId,
+      whyThis: result.why_this ?? '',
+      whyUs: result.why_us ?? '',
+      whyNow: result.why_now ?? '',
+      meddics: result.meddpics ?? {},
+      detailLevel: level === 'simple' ? 'simple' : 'detail',
+    });
 
     return {
-      rawOutput,
+      rawOutput: {
+        agent: this.agentType,
+        result,
+        comparison,
+      },
       normalizedOutput: {
-        needs: rawOutput.threeWhys,
-        painPoints: rawOutput.meddpic.identifyPain,
-        meddpic: rawOutput.meddpic,
+        whyThis: comparison.whyThis,
+        whyUs: comparison.whyUs,
+        whyNow: comparison.whyNow,
+        meddpics: comparison.meddics,
+        detailLevel: comparison.detailLevel,
       },
       metadata: {
-        model: 'mock-three-whys-agent',
+        model:
+          level === 'simple'
+            ? process.env.OPENAI_MODEL_SIMPLE
+            : process.env.OPENAI_MODEL_DETAIL,
         latencyMs: Date.now() - started,
       },
     };
-  }
-
-  private fakeDelay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

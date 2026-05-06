@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgentTaskStatus } from '../common/enums/agent-task-status.enum';
-import { ResearchAgentTaskRecord } from './types/pipeline-records.types';
+import { ResearchAgentTaskEntity } from '../database/entities/research-agent-task.entity';
 
 @Injectable()
 export class DependencyResolverService {
   resolveReadyTasks(
-    tasks: ResearchAgentTaskRecord[],
-  ): ResearchAgentTaskRecord[] {
+    tasks: ResearchAgentTaskEntity[],
+  ): ResearchAgentTaskEntity[] {
     return tasks.filter((task) => {
       if (
         task.status !== AgentTaskStatus.PENDING &&
@@ -20,17 +20,17 @@ export class DependencyResolverService {
     });
   }
 
-  hasFatalFailure(tasks: ResearchAgentTaskRecord[]): boolean {
+  hasFatalFailure(tasks: ResearchAgentTaskEntity[]): boolean {
     return tasks.some(
       (task) => task.required && task.status === AgentTaskStatus.FAILED,
     );
   }
 
   private areDependenciesResolved(
-    task: ResearchAgentTaskRecord,
-    allTasks: ResearchAgentTaskRecord[],
+    task: ResearchAgentTaskEntity,
+    allTasks: ResearchAgentTaskEntity[],
   ): boolean {
-    if (!task.dependsOn.length) {
+    if (!task.dependsOn?.length) {
       return true;
     }
 

@@ -1,27 +1,30 @@
 import { Injectable } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
 
 import { PipelineStatus } from '../common/enums/pipeline-status.enum';
 import { ResearchMode } from '../common/enums/research-mode.enum';
 import { ResearchTool } from '../common/enums/research-tool.enum';
-import { CompanyProfileMemoryCacheService } from '../memory/company-profile-memory-cache.service';
-import { InMemoryResearchStore } from './in-memory-research.store';
+import { ResearchPipelineRunEntity } from '../database/entities/research-pipeline-run.entity';
+import { DbResearchStore } from './db-research.store';
 import { PipelineBuilderService } from './pipeline-builder.service';
 import { PipelineQueueService } from './pipeline-queue.service';
+import { CompanyProfileRedisCacheService } from 'src/redis/company-profile-redis-cache.service';
 
 @Injectable()
 export class OrchestratorService {
   constructor(
-    private readonly store: InMemoryResearchStore,
+    private readonly store: DbResearchStore,
     private readonly pipelineBuilder: PipelineBuilderService,
     private readonly pipelineQueue: PipelineQueueService,
-    private readonly companyCache: CompanyProfileMemoryCacheService,
+    private readonly companyProfileCache: CompanyProfileRedisCacheService,
   ) {}
 
-  startSingleResearch(input: Record<string, any>) {
+  async startSingleResearch(input: Record<string, any>) {
     const selectedTools: ResearchTool[] | undefined = input.selected_tools;
 
-    const pipelineRun = this.pipelineBuilder.createPipeline({
+    const pipelineRun = await this.pipelineBuilder.createPipeline({
       mode: ResearchMode.SINGLE,
+      userId: Number(input.user_id),
       inputJson: input,
       selectedTools,
     });
@@ -33,25 +36,29 @@ export class OrchestratorService {
       pipelineRunId: pipelineRun.id,
       status: pipelineRun.status,
       nextStep: `GET /research/pipelines/${pipelineRun.id}`,
-      snapshot: this.store.getPipelineSnapshot(pipelineRun.id),
+      snapshot: await this.store.getPipelineSnapshot(pipelineRun.id),
     };
   }
 
-  startMultiResearch(input: { companies: Record<string, any>[] }) {
-    const batch = this.store.createBatch(input.companies.length);
+  async startMultiResearch(input: { companies: Record<string, any>[] }) {
+    const batchId = uuidv4();
 
-    this.store.updateBatch(batch.id, {
-      status: PipelineStatus.RUNNING,
-    });
+    const pipelineRuns: ResearchPipelineRunEntity[] = [];
 
-    const pipelineRuns = input.companies.map((companyInput) =>
-      this.pipelineBuilder.createPipeline({
+    for (const companyInput of input.companies) {
+      const selectedTools: ResearchTool[] | undefined =
+        companyInput.selected_tools;
+
+      const pipelineRun = await this.pipelineBuilder.createPipeline({
         mode: ResearchMode.MULTI,
-        batchId: batch.id,
+        batchId,
+        userId: Number(companyInput.user_id),
         inputJson: companyInput,
-        selectedTools: companyInput.selected_tools,
-      }),
-    );
+        selectedTools,
+      });
+
+      pipelineRuns.push(pipelineRun);
+    }
 
     for (const pipelineRun of pipelineRuns) {
       this.pipelineQueue.enqueue(pipelineRun.id);
@@ -59,11 +66,10 @@ export class OrchestratorService {
 
     return {
       message: 'Multi research batch queued',
-      batchId: batch.id,
+      batchId,
       status: PipelineStatus.RUNNING,
       pipelineRunIds: pipelineRuns.map((item) => item.id),
-      nextStep: `GET /research/batches/${batch.id}`,
-      batch: this.store.getBatch(batch.id),
+      nextStep: `GET /research/batches/${batchId}`,
     };
   }
 
@@ -75,15 +81,15 @@ export class OrchestratorService {
     return this.store.getBatchSnapshot(batchId);
   }
 
-  getCompanyCache() {
-    return this.companyCache.list();
+  invalidateCompanyProfileCache(userId: number) {
+    return this.companyProfileCache.invalidateUser(userId);
   }
 
-  clearCompanyCache() {
-    this.companyCache.clear();
+  getCompanyProfileCacheDebug(userId: number) {
+    return this.companyProfileCache.getDebugInfo(userId);
+  }
 
-    return {
-      message: 'Company profile RAM cache cleared',
-    };
+  getPipelineProgress(pipelineRunId: string) {
+    return this.store.getPipelineProgress(pipelineRunId);
   }
 }

@@ -33,11 +33,15 @@ export class ResearchService {
     return this.orchestrator.getBatch(batchId);
   }
 
-  getCompanyCache() {
-    return this.orchestrator.getCompanyCache();
+  invalidateCompanyProfileCache(userId: number) {
+    return this.orchestrator.invalidateCompanyProfileCache(userId);
   }
 
-  clearCompanyCache() {
-    return this.orchestrator.clearCompanyCache();
+  getCompanyProfileCacheDebug(userId: number) {
+    return this.orchestrator.getCompanyProfileCacheDebug(userId);
+  }
+
+  getPipelineProgress(pipelineRunId: string) {
+    return this.orchestrator.getPipelineProgress(pipelineRunId);
   }
 }
