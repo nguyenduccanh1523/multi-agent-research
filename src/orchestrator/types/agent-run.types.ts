@@ -17,6 +17,5 @@ export interface AgentRunOutput {
     model?: string;
     tokenUsage?: JsonObject;
     latencyMs?: number;
-    cacheHit?: boolean;
   };
 }

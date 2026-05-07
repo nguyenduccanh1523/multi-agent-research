@@ -34,16 +34,18 @@ export function normalizeSelectedAgentTypes(
     return ALL_SELECTABLE_AGENT_TYPES;
   }
 
-  const agentTypes = tools
-    .map(
-      (tool) =>
-        SELECTABLE_TOOL_TO_AGENT[
-          tool as Exclude<ResearchTool, ResearchTool.ALL>
-        ],
-    )
-    .filter(Boolean);
-
-  return Array.from(new Set(agentTypes));
+  return Array.from(
+    new Set(
+      tools
+        .map(
+          (tool) =>
+            SELECTABLE_TOOL_TO_AGENT[
+              tool as Exclude<ResearchTool, ResearchTool.ALL>
+            ],
+        )
+        .filter(Boolean),
+    ),
+  );
 }
 
 export function buildResearchPipelineGraph(

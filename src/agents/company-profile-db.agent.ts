@@ -1,98 +1,151 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
-import { CompanyProfileMemoryCacheService } from '../memory/company-profile-memory-cache.service';
+import { ResearchDataRepository } from '../orchestrator/research-data.repository';
+import { RagRetrievalService } from '../rag/rag-retrieval.service';
+import { CompanyProfileRedisCacheService } from '../redis/company-profile-redis-cache.service';
+import { BaseAgent } from './base-agent.interface';
 import {
   AgentRunInput,
   AgentRunOutput,
 } from '../orchestrator/types/agent-run.types';
-import { BaseAgent } from './base-agent.interface';
 
 @Injectable()
 export class CompanyProfileDbAgent implements BaseAgent {
   agentType = AgentType.COMPANY_PROFILE_DB;
 
   constructor(
-    private readonly companyCache: CompanyProfileMemoryCacheService,
+    private readonly researchDataRepo: ResearchDataRepository,
+    private readonly rag: RagRetrievalService,
+    private readonly companyProfileCache: CompanyProfileRedisCacheService,
   ) {}
 
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
 
-    const name = input.researchInput.name;
-    const url = input.researchInput.url;
+    const userId = Number(input.researchInput.user_id);
 
-    const cachedProfile = this.companyCache.getByInput({ name, url });
+    /**
+     * Level 1:
+     * Nếu cùng user + cùng name/url/jobtitle/focus_on
+     * thì trả thẳng output từ Redis.
+     */
+    const cachedAgentOutput = await this.companyProfileCache.getAgentOutput({
+      userId,
+      input: input.researchInput,
+    });
 
-    if (cachedProfile) {
+    if (cachedAgentOutput) {
       return {
         rawOutput: {
           agent: this.agentType,
-          source: 'ram-cache',
+          source: 'redis-agent-output-cache',
           cacheHit: true,
-          profile: cachedProfile,
         },
         normalizedOutput: {
-          ...cachedProfile,
+          ...cachedAgentOutput,
           cacheHit: true,
-          source: 'ram-cache',
+          cacheSource: 'redis-agent-output-cache',
         },
         metadata: {
-          model: 'ram-cache',
+          model: 'redis-cache',
           latencyMs: Date.now() - started,
-          cacheHit: true,
         },
       };
     }
 
-    await this.fakeDelay(500);
+    /**
+     * Level 2:
+     * Nếu chưa có full output cache,
+     * thử lấy structured profile từ Redis để tránh query nhiều bảng.
+     */
+    let structuredProfile =
+      await this.companyProfileCache.getStructuredProfile(userId);
+
+    let structuredProfileCacheHit = true;
+
+    if (!structuredProfile) {
+      structuredProfileCacheHit = false;
+
+      const profile =
+        await this.researchDataRepo.getCompanyProfileByUser(userId);
+
+      structuredProfile = {
+        companyId: profile.companyId,
+        companyName: profile.companyName,
+        website: profile.website,
+
+        documentsAi: profile.documentsAi,
+        productInfor: profile.productInfor,
+        products: profile.products,
+
+        partners: profile.partners,
+        competitors: profile.competitors,
+      };
+
+      await this.companyProfileCache.setStructuredProfile({
+        userId,
+        profile: structuredProfile,
+      });
+    }
 
     /**
-     * Hiện tại mock DB.
-     * Sau này bạn thay đoạn này bằng query database thật.
+     * Profile embedding context vẫn phụ thuộc query/focus_on.
+     * Nếu full output cache miss thì cần search embedding lại để context đúng hơn.
      */
-    const profile = input.researchInput.companyProfile ?? {
-      companyName: name,
-      website: url,
-      industry: 'Unknown',
-      partners: [],
-      competitors: [],
-      description: null,
+    const query = [
+      input.researchInput.name,
+      input.researchInput.url,
+      input.researchInput.jobtitle,
+      input.researchInput.focus_on,
+      JSON.stringify(
+        structuredProfile.productInfor ?? structuredProfile.products ?? [],
+      ),
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const profileEmbeddingContext = await this.rag.getCompanyProfileContext({
+      companyId: Number(structuredProfile.companyId),
+      query,
+      limit: 10,
+      maxChars: 5000,
+    });
+
+    const normalizedOutput = {
+      ...structuredProfile,
+      profileEmbeddingContext,
+
+      cacheHit: false,
+      structuredProfileCacheHit,
+      cacheSource: structuredProfileCacheHit
+        ? 'redis-structured-profile-cache'
+        : 'database',
     };
 
-    const normalizedProfile = {
-      companyName: profile.companyName ?? name,
-      website: profile.website ?? url,
-      industry: profile.industry ?? null,
-      description: profile.description ?? null,
-      partners: profile.partners ?? [],
-      competitors: profile.competitors ?? [],
-      rawProfile: profile,
-    };
-
-    this.companyCache.setByInput({ name, url }, normalizedProfile);
+    /**
+     * Lưu full output để lần sau cùng search input trả nhanh nhất.
+     */
+    await this.companyProfileCache.setAgentOutput({
+      userId,
+      input: input.researchInput,
+      normalizedOutput,
+    });
 
     return {
       rawOutput: {
         agent: this.agentType,
-        source: 'mock-db',
+        source: structuredProfileCacheHit
+          ? 'redis-structured-profile-cache+tb_embeddings'
+          : 'database+tb_embeddings',
         cacheHit: false,
-        profile,
+        structuredProfileCacheHit,
       },
-      normalizedOutput: {
-        ...normalizedProfile,
-        cacheHit: false,
-        source: 'mock-db',
-      },
+      normalizedOutput,
       metadata: {
-        model: 'mock-db-agent',
+        model: 'database+tb_embeddings+redis-cache',
         latencyMs: Date.now() - started,
-        cacheHit: false,
       },
     };
-  }
-
-  private fakeDelay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

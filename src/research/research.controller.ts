@@ -1,4 +1,12 @@
-import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Delete,
+  ParseIntPipe,
+} from '@nestjs/common';
 
 import { StartMultiResearchDto } from './dto/start-multi-research.dto';
 import { StartSingleResearchDto } from './dto/start-single-research.dto';
@@ -28,13 +36,18 @@ export class ResearchController {
     return this.researchService.getBatch(batchId);
   }
 
-  @Get('company-cache')
-  getCompanyCache() {
-    return this.researchService.getCompanyCache();
+  @Get('cache/company-profile/:userId')
+  getCompanyProfileCacheDebug(@Param('userId', ParseIntPipe) userId: number) {
+    return this.researchService.getCompanyProfileCacheDebug(userId);
   }
 
-  @Delete('company-cache')
-  clearCompanyCache() {
-    return this.researchService.clearCompanyCache();
+  @Delete('cache/company-profile/:userId')
+  invalidateCompanyProfileCache(@Param('userId', ParseIntPipe) userId: number) {
+    return this.researchService.invalidateCompanyProfileCache(userId);
+  }
+
+  @Get('pipelines/:pipelineRunId/progress')
+  getPipelineProgress(@Param('pipelineRunId') pipelineRunId: string) {
+    return this.researchService.getPipelineProgress(pipelineRunId);
   }
 }

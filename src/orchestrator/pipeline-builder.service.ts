@@ -2,29 +2,31 @@ import { Injectable } from '@nestjs/common';
 
 import { ResearchMode } from '../common/enums/research-mode.enum';
 import { ResearchTool } from '../common/enums/research-tool.enum';
-import { InMemoryResearchStore } from './in-memory-research.store';
+import { DbResearchStore } from './db-research.store';
 import { buildResearchPipelineGraph } from './research-pipeline.graph';
 
 @Injectable()
 export class PipelineBuilderService {
-  constructor(private readonly store: InMemoryResearchStore) {}
+  constructor(private readonly store: DbResearchStore) {}
 
-  createPipeline(params: {
+  async createPipeline(params: {
     mode: ResearchMode;
     batchId?: string | null;
+    userId: number;
     inputJson: Record<string, any>;
     selectedTools?: ResearchTool[];
   }) {
-    const pipelineRun = this.store.createPipelineRun({
+    const pipelineRun = await this.store.createPipelineRun({
       mode: params.mode,
       batchId: params.batchId ?? null,
+      userId: params.userId,
       inputJson: params.inputJson,
     });
 
     const graph = buildResearchPipelineGraph(params.selectedTools);
 
     for (const node of graph) {
-      this.store.createAgentTask({
+      await this.store.createAgentTask({
         pipelineRunId: pipelineRun.id,
         agentType: node.agentType,
         dependsOn: node.dependsOn,

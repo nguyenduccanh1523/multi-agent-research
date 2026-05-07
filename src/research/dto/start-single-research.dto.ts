@@ -1,6 +1,8 @@
+import { Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -11,6 +13,10 @@ import { ResearchLevel } from '../../common/enums/research-level.enum';
 import { ResearchTool } from '../../common/enums/research-tool.enum';
 
 export class StartSingleResearchDto {
+  @Type(() => Number)
+  @IsInt()
+  user_id!: number;
+
   @IsString()
   @IsNotEmpty()
   name!: string;
@@ -30,6 +36,14 @@ export class StartSingleResearchDto {
   @IsOptional()
   upload_file?: any;
 
+  @IsArray()
+  @IsOptional()
+  upload_docs?: any[];
+
+  @IsArray()
+  @IsOptional()
+  upload_docs_ai?: any[];
+
   @IsEnum(ResearchLevel)
   @IsOptional()
   level?: ResearchLevel;
@@ -42,8 +56,4 @@ export class StartSingleResearchDto {
   @IsObject()
   @IsOptional()
   context?: Record<string, any>;
-
-  @IsObject()
-  @IsOptional()
-  companyProfile?: Record<string, any>;
 }

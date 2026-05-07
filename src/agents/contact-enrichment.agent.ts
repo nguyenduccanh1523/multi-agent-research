@@ -1,65 +1,74 @@
 import { Injectable } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
+import { ResearchDataRepository } from '../orchestrator/research-data.repository';
+import { BaseAgent } from './base-agent.interface';
 import {
   AgentRunInput,
   AgentRunOutput,
 } from '../orchestrator/types/agent-run.types';
-import { BaseAgent } from './base-agent.interface';
+import { ContactFinderService } from './contact-finder.service';
 
 @Injectable()
 export class ContactEnrichmentAgent implements BaseAgent {
   agentType = AgentType.CONTACT_ENRICHMENT;
 
+  constructor(
+    private readonly researchDataRepo: ResearchDataRepository,
+    private readonly contactFinder: ContactFinderService,
+  ) {}
+
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
 
-    await this.fakeDelay(500);
-
     const overview = input.previousOutputs[AgentType.COMPANY_RESEARCH_OVERVIEW];
 
-    const companyName = overview?.companyName ?? input.researchInput.name;
-    const website = overview?.website ?? input.researchInput.url;
+    const researchCompanyId = Number(overview.researchCompanyId);
 
-    const rawOutput = {
-      agent: this.agentType,
-      companyName,
-      website,
-      basedOn: {
-        hasOverview: Boolean(overview),
-      },
-      contacts: [
-        {
-          name: 'Mock Contact',
-          title: input.researchInput.jobtitle ?? 'Head of Sales',
-          linkedinUrl: website ? `${website}/linkedin/mock-contact` : null,
-          email: website ? `sales@${this.extractDomain(website)}` : null,
-        },
-      ],
-    };
+    const linkedinContacts = await this.contactFinder.findLinkedinMinCost({
+      companyName: overview.companyName ?? input.researchInput.name,
+      companyUrl: overview.website ?? input.researchInput.url,
+      numResults: 30,
+    });
+
+    const contacts = linkedinContacts.map((item) => ({
+      name: this.extractNameFromTitle(item.title),
+      role: item.title ?? input.researchInput.jobtitle ?? null,
+      linkedin: item.linkedin_url,
+      email: null,
+    }));
+
+    const savedContacts = await this.researchDataRepo.saveContacts({
+      researchCompanyId,
+      contacts,
+    });
 
     return {
-      rawOutput,
+      rawOutput: {
+        agent: this.agentType,
+        linkedinContacts,
+        contacts: savedContacts,
+      },
       normalizedOutput: {
-        contacts: rawOutput.contacts,
-        source: 'mock-contact-enrichment',
+        contacts: savedContacts.map((item) => ({
+          name: item.name,
+          role: item.role,
+          linkedin: item.linkedin,
+          email: item.email,
+        })),
       },
       metadata: {
-        model: 'mock-contact-agent',
+        model: 'serpapi-linkedin-min-cost',
         latencyMs: Date.now() - started,
       },
     };
   }
 
-  private extractDomain(website: string): string {
-    return website
-      .replace('https://', '')
-      .replace('http://', '')
-      .replace('www.', '')
-      .split('/')[0];
-  }
+  private extractNameFromTitle(title?: string | null): string | null {
+    if (!title) return null;
 
-  private fakeDelay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    const cleaned = title.split('|')[0].split('-')[0].trim();
+
+    return cleaned || null;
   }
 }
