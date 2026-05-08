@@ -28,12 +28,19 @@ export class ScoringAgent implements BaseAgent {
 
     const researchCompanyId = Number(overview.researchCompanyId);
 
+    const model =
+      process.env.SCORING_MODEL ??
+      process.env.COMPARISON_MODEL_DETAIL ??
+      process.env.OPENAI_MODEL_DETAIL ??
+      'gpt-5';
+
     const prompt = this.prompts.scoringPrompt();
 
     const result = await this.llm.json({
       provider: 'openai',
-      level: input.researchInput.level,
+      model,
       system: prompt.system,
+      responseFormat: this.prompts.scoringResponseFormat(),
       user: JSON.stringify({
         primary_company: {
           company_name: profile.companyName,
@@ -98,10 +105,7 @@ export class ScoringAgent implements BaseAgent {
         },
       },
       metadata: {
-        model:
-          input.researchInput.level === 'simple'
-            ? process.env.OPENAI_MODEL_SIMPLE
-            : process.env.OPENAI_MODEL_DETAIL,
+        model,
         latencyMs: Date.now() - started,
       },
     };

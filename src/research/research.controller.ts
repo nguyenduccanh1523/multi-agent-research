@@ -6,6 +6,8 @@ import {
   Post,
   Delete,
   ParseIntPipe,
+  Query,
+  DefaultValuePipe,
 } from '@nestjs/common';
 
 import { StartMultiResearchDto } from './dto/start-multi-research.dto';
@@ -49,5 +51,22 @@ export class ResearchController {
   @Get('pipelines/:pipelineRunId/progress')
   getPipelineProgress(@Param('pipelineRunId') pipelineRunId: string) {
     return this.researchService.getPipelineProgress(pipelineRunId);
+  }
+
+  @Get('users/:userId/pipelines')
+  getUserPipelineHistory(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('pageSize', new DefaultValuePipe(10), ParseIntPipe) pageSize: number,
+    @Query('status') status?: string,
+    @Query('mode') mode?: string,
+  ) {
+    return this.researchService.getUserPipelineHistory({
+      userId,
+      page,
+      pageSize,
+      status,
+      mode,
+    });
   }
 }

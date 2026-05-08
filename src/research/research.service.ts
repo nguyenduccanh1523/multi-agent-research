@@ -44,4 +44,14 @@ export class ResearchService {
   getPipelineProgress(pipelineRunId: string) {
     return this.orchestrator.getPipelineProgress(pipelineRunId);
   }
+
+  getUserPipelineHistory(params: {
+    userId: number;
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    mode?: string;
+  }) {
+    return this.orchestrator.getUserPipelineHistory(params);
+  }
 }
