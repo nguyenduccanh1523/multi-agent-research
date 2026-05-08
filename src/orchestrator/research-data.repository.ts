@@ -200,6 +200,35 @@ export class ResearchDataRepository {
     return this.crawlDataRepo.save(crawl);
   }
 
+  async updateCrawlData(params: {
+    crawDataId: number;
+    corporateInitiatives?: string;
+    triggerEvents?: string;
+    techStack?: string;
+    financialCapacity?: string;
+    domain?: string[];
+    businessData?: Record<string, any>;
+  }): Promise<CrawlDataEntity> {
+    const crawl = await this.crawlDataRepo.findOne({
+      where: {
+        crawDataId: params.crawDataId,
+      },
+    });
+
+    if (!crawl) {
+      throw new NotFoundException(`CrawlData not found: ${params.crawDataId}`);
+    }
+
+    crawl.corporateInitiatives = params.corporateInitiatives ?? '';
+    crawl.triggerEvents = params.triggerEvents ?? '';
+    crawl.techStack = params.techStack ?? '';
+    crawl.financialCapacity = params.financialCapacity ?? '';
+    crawl.domain = JSON.stringify(params.domain ?? []);
+    crawl.businessData = params.businessData ?? {};
+
+    return this.crawlDataRepo.save(crawl);
+  }
+
   async upsertThreeWhysMeddpic(params: {
     researchCompanyId: number;
     whyThis: string;

@@ -35,7 +35,9 @@ export class OrchestratorService {
       message: 'Single research pipeline queued',
       pipelineRunId: pipelineRun.id,
       status: pipelineRun.status,
-      nextStep: `GET /research/pipelines/${pipelineRun.id}`,
+      nextStep: `GET /research/pipelines/${pipelineRun.id}/progress`,
+      snapshotStep: `GET /research/pipelines/${pipelineRun.id}`,
+
       snapshot: await this.store.getPipelineSnapshot(pipelineRun.id),
     };
   }
@@ -70,6 +72,10 @@ export class OrchestratorService {
       status: PipelineStatus.RUNNING,
       pipelineRunIds: pipelineRuns.map((item) => item.id),
       nextStep: `GET /research/batches/${batchId}`,
+      progressSteps: pipelineRuns.map((item) => ({
+        pipelineRunId: item.id,
+        url: `GET /research/pipelines/${item.id}/progress`,
+      })),
     };
   }
 
@@ -91,5 +97,15 @@ export class OrchestratorService {
 
   getPipelineProgress(pipelineRunId: string) {
     return this.store.getPipelineProgress(pipelineRunId);
+  }
+
+  getUserPipelineHistory(params: {
+    userId: number;
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    mode?: string;
+  }) {
+    return this.store.getUserPipelineHistory(params);
   }
 }

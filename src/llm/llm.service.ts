@@ -9,7 +9,9 @@ export class LlmService {
   private perplexityClient: OpenAI | null = null;
 
   private getOpenAIClient() {
-    if (this.openaiClient) return this.openaiClient;
+    if (this.openaiClient) {
+      return this.openaiClient;
+    }
 
     const apiKey = process.env.OPENAI_API_KEY;
 
@@ -24,7 +26,9 @@ export class LlmService {
   }
 
   private getPerplexityClient() {
-    if (this.perplexityClient) return this.perplexityClient;
+    if (this.perplexityClient) {
+      return this.perplexityClient;
+    }
 
     const apiKey = process.env.PERPLEXITY_KEY;
 
@@ -48,6 +52,10 @@ export class LlmService {
     user: string;
     level?: string;
     model?: string;
+    responseFormat?: Record<string, any>;
+    maxTokens?: number;
+    temperature?: number;
+    topP?: number;
   }): Promise<Record<string, any>> {
     const provider = params.provider ?? 'openai';
     const level = params.level ?? 'detail';
@@ -65,12 +73,14 @@ export class LlmService {
           ? (process.env.OPENAI_MODEL_SIMPLE ?? 'gpt-4o')
           : (process.env.OPENAI_MODEL_DETAIL ?? 'gpt-5'));
 
-    const kwargs: any = {
+    const requestPayload: any = {
       model,
       messages: [
         {
           role: 'system',
-          content: params.system,
+          content:
+            params.system +
+            '\n\nReturn ONLY one valid JSON object. No markdown. No code fences.',
         },
         {
           role: 'user',
@@ -79,39 +89,92 @@ export class LlmService {
       ],
     };
 
-    /**
-     * Perplexity không ép response_format ở đây để tránh lỗi compatibility.
-     * OpenAI gpt-5 có thể dùng json_object.
-     */
-    if (provider === 'openai' && model.includes('gpt-5')) {
-      kwargs.response_format = { type: 'json_object' };
+    if (params.maxTokens) {
+      requestPayload.max_tokens = params.maxTokens;
     }
 
-    const response = await client.chat.completions.create(kwargs);
+    /**
+     * Không set mặc định temperature/top_p cho gpt-5.
+     * Một số model chỉ chấp nhận default temperature.
+     */
+    if (params.temperature !== undefined) {
+      requestPayload.temperature = params.temperature;
+    }
 
-    const text = response.choices[0]?.message?.content ?? '{}';
+    if (params.topP !== undefined) {
+      requestPayload.top_p = params.topP;
+    }
 
-    return this.robustParseJson(text);
+    if (params.responseFormat) {
+      requestPayload.response_format = params.responseFormat;
+    } else if (provider === 'openai') {
+      requestPayload.response_format = {
+        type: 'json_object',
+      };
+    }
+
+    const response = await client.chat.completions.create(requestPayload);
+
+    const content = response.choices[0]?.message?.content ?? '{}';
+
+    const parsed = this.robustParseJson(content);
+
+    if (Object.keys(parsed).length === 0) {
+      console.warn('[LlmService] Empty JSON parsed', {
+        provider,
+        model,
+        contentPreview: content.slice(0, 500),
+      });
+    }
+
+    return parsed;
   }
 
   private robustParseJson(text: string): Record<string, any> {
+    if (!text) {
+      return {};
+    }
+
+    const cleaned = this.stripCodeFence(text);
+
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(cleaned);
+
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
     } catch {
       // continue
     }
 
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
 
-    if (first !== -1 && last !== -1 && last > first) {
+    if (first >= 0 && last > first) {
       try {
-        return JSON.parse(text.slice(first, last + 1));
+        const parsed = JSON.parse(cleaned.slice(first, last + 1));
+
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed;
+        }
       } catch {
         // continue
       }
     }
 
     return {};
+  }
+
+  private stripCodeFence(value: string) {
+    let text = value.trim();
+
+    if (text.startsWith('```')) {
+      text = text.replace(/^```json/i, '');
+      text = text.replace(/^```/i, '');
+      text = text.replace(/```$/i, '');
+      text = text.trim();
+    }
+
+    return text;
   }
 }
