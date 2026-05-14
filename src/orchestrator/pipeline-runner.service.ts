@@ -13,6 +13,21 @@ import { DependencyResolverService } from './dependency-resolver.service';
 export class PipelineRunnerService {
   private readonly logger = new Logger(PipelineRunnerService.name);
 
+  private formatMs(ms: number) {
+    if (ms < 1000) return `${ms}ms`;
+
+    const seconds = ms / 1000;
+
+    if (seconds < 60) {
+      return `${seconds.toFixed(1)}s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.round(seconds % 60);
+
+    return `${minutes}m${remainingSeconds}s`;
+  }
+
   constructor(
     private readonly store: DbResearchStore,
     private readonly agentRegistry: AgentRegistryService,
@@ -35,9 +50,14 @@ export class PipelineRunnerService {
           (task) => task.required && task.status === AgentTaskStatus.FAILED,
         );
 
+        const partialReport = await this.aggregator.aggregateFinalReport(
+          pipelineRun.id,
+        );
+
         await this.store.updatePipelineRun(pipelineRunId, {
           status: PipelineStatus.FAILED,
           completedAt: new Date(),
+          finalOutputJson: partialReport,
           errorJson: {
             message: 'Required agent task failed',
             failedTasks,
@@ -69,10 +89,21 @@ export class PipelineRunnerService {
 
       const readyTasks = this.dependencyResolver.resolveReadyTasks(tasks);
 
+      this.logger.log(
+        `[PipelineRound] pipelineRunId=${pipelineRunId} readyAgents=${readyTasks
+          .map((task) => task.agentType)
+          .join(', ')} totalTasks=${tasks.length}`,
+      );
+
       if (readyTasks.length === 0) {
+        const partialReport = await this.aggregator.aggregateFinalReport(
+          pipelineRun.id,
+        );
+
         await this.store.updatePipelineRun(pipelineRunId, {
           status: PipelineStatus.FAILED,
           completedAt: new Date(),
+          finalOutputJson: partialReport,
           errorJson: {
             message:
               'No ready tasks found, but pipeline has not completed. Check dependency graph.',
@@ -106,6 +137,7 @@ export class PipelineRunnerService {
   }
 
   private async executeAgentTask(taskId: string): Promise<void> {
+    const taskStartedAt = Date.now();
     const task = await this.store.getAgentTask(taskId);
 
     try {
@@ -132,7 +164,23 @@ export class PipelineRunnerService {
         previousOutputs,
       };
 
+      const agentStartedAt = Date.now();
+
+      this.logger.log(
+        `[AgentStart] pipelineRunId=${pipelineRun.id} taskId=${task.id} agent=${task.agentType} attempt=${
+          task.attemptCount + 1
+        }/${task.maxRetries}`,
+      );
+
       const result = await agent.run(agentInput);
+
+      const agentDurationMs = Date.now() - agentStartedAt;
+
+      this.logger.log(
+        `[AgentDone] pipelineRunId=${pipelineRun.id} taskId=${task.id} agent=${task.agentType} took=${this.formatMs(
+          agentDurationMs,
+        )}`,
+      );
 
       if (
         task.agentType === AgentType.COMPANY_RESEARCH_OVERVIEW &&
@@ -158,8 +206,15 @@ export class PipelineRunnerService {
         status: AgentTaskStatus.SUCCEEDED,
         completedAt: new Date(),
       });
+
+      await this.aggregator.aggregateFinalReport(pipelineRun.id);
     } catch (error) {
-      this.logger.error(`Agent task failed: ${taskId}`, error as any);
+      this.logger.error(
+        `[AgentFailed] taskId=${taskId} agent=${task.agentType} took=${this.formatMs(
+          Date.now() - taskStartedAt,
+        )} error=${error instanceof Error ? error.message : String(error)}`,
+        error as any,
+      );
       await this.handleTaskFailure(taskId, error);
     }
   }
@@ -187,5 +242,7 @@ export class PipelineRunnerService {
       completedAt: new Date(),
       errorJson,
     });
+
+    await this.aggregator.aggregateFinalReport(task.pipelineRunId);
   }
 }

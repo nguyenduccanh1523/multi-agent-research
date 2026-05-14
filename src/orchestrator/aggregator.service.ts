@@ -12,16 +12,16 @@ export class AggregatorService {
     const previousOutputs = await this.store.getPreviousOutputs(pipelineRunId);
 
     const finalReport = {
-      overview: previousOutputs[AgentType.COMPANY_RESEARCH_OVERVIEW] ?? null,
+      overview: previousOutputs[AgentType.COMPANY_RESEARCH_OVERVIEW] ?? {},
 
-      analysis: previousOutputs[AgentType.THREE_WHYS_MEDDPIC] ?? null,
+      analysis: previousOutputs[AgentType.THREE_WHYS_MEDDPIC] ?? {},
 
       partnerCompetitorInsight:
-        previousOutputs[AgentType.PARTNER_COMPETITOR] ?? null,
+        previousOutputs[AgentType.PARTNER_COMPETITOR] ?? {},
 
-      contact: previousOutputs[AgentType.CONTACT_ENRICHMENT] ?? null,
+      contact: previousOutputs[AgentType.CONTACT_ENRICHMENT] ?? {},
 
-      scoring: previousOutputs[AgentType.SCORING] ?? null,
+      scoring: previousOutputs[AgentType.SCORING] ?? {},
 
       metadata: {
         pipelineRunId: pipelineRun.id,
@@ -32,7 +32,7 @@ export class AggregatorService {
         completedAgents: Object.keys(previousOutputs),
         completedAt: new Date().toISOString(),
         internal: {
-          companyProfile: previousOutputs[AgentType.COMPANY_PROFILE_DB] ?? null,
+          companyProfile: previousOutputs[AgentType.COMPANY_PROFILE_DB] ?? {},
         },
       },
     };
