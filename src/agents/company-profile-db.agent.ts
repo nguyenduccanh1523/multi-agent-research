@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
 import { ResearchDataRepository } from '../orchestrator/research-data.repository';
@@ -14,6 +14,8 @@ import {
 export class CompanyProfileDbAgent implements BaseAgent {
   agentType = AgentType.COMPANY_PROFILE_DB;
 
+  private readonly logger = new Logger(CompanyProfileDbAgent.name);
+
   constructor(
     private readonly researchDataRepo: ResearchDataRepository,
     private readonly rag: RagRetrievalService,
@@ -25,14 +27,75 @@ export class CompanyProfileDbAgent implements BaseAgent {
 
     const userId = Number(input.researchInput.user_id);
 
+    if (!Number.isFinite(userId)) {
+      throw new Error('Invalid user_id for CompanyProfileDbAgent');
+    }
+
     /**
-     * Level 1:
-     * Nếu cùng user + cùng name/url/jobtitle/focus_on
-     * thì trả thẳng output từ Redis.
+     * Quan trọng:
+     * Luôn đọc DB trước để biết profile hiện tại có đổi chưa.
+     * Không được check agent-output cache trước DB, vì user có thể vừa update profile.
+     */
+    const latestProfile =
+      await this.researchDataRepo.getCompanyProfileByUser(userId);
+
+    const structuredProfile = {
+      companyId: latestProfile.companyId,
+      companyName: latestProfile.companyName,
+      website: latestProfile.website,
+
+      documentsAi: latestProfile.documentsAi,
+      productInfor: latestProfile.productInfor,
+      products: latestProfile.products,
+
+      partners: latestProfile.partners,
+      competitors: latestProfile.competitors,
+    };
+
+    const latestProfileHash =
+      this.companyProfileCache.buildProfileHash(structuredProfile);
+
+    const cachedStructured =
+      await this.companyProfileCache.getStructuredProfileWithMeta(userId);
+
+    let structuredProfileCacheHit = false;
+
+    if (!cachedStructured) {
+      this.logger.log(
+        `[CompanyProfileDbAgent] structured cache MISS userId=${userId}`,
+      );
+
+      await this.companyProfileCache.setStructuredProfile({
+        userId,
+        profile: structuredProfile,
+        profileHash: latestProfileHash,
+      });
+    } else if (cachedStructured.profileHash !== latestProfileHash) {
+      this.logger.warn(
+        `[CompanyProfileDbAgent] profile changed userId=${userId} oldHash=${cachedStructured.profileHash} newHash=${latestProfileHash}`,
+      );
+
+      await this.companyProfileCache.setStructuredProfile({
+        userId,
+        profile: structuredProfile,
+        profileHash: latestProfileHash,
+      });
+    } else {
+      structuredProfileCacheHit = true;
+
+      this.logger.log(
+        `[CompanyProfileDbAgent] structured cache HIT userId=${userId} profileHash=${latestProfileHash}`,
+      );
+    }
+
+    /**
+     * Sau khi đã có latestProfileHash, mới được check full output cache.
+     * Cache key lúc này phụ thuộc cả research input + profileHash.
      */
     const cachedAgentOutput = await this.companyProfileCache.getAgentOutput({
       userId,
       input: input.researchInput,
+      profileHash: latestProfileHash,
     });
 
     if (cachedAgentOutput) {
@@ -41,11 +104,14 @@ export class CompanyProfileDbAgent implements BaseAgent {
           agent: this.agentType,
           source: 'redis-agent-output-cache',
           cacheHit: true,
+          profileHash: latestProfileHash,
         },
         normalizedOutput: {
           ...cachedAgentOutput,
           cacheHit: true,
+          structuredProfileCacheHit,
           cacheSource: 'redis-agent-output-cache',
+          profileHash: latestProfileHash,
         },
         metadata: {
           model: 'redis-cache',
@@ -54,45 +120,6 @@ export class CompanyProfileDbAgent implements BaseAgent {
       };
     }
 
-    /**
-     * Level 2:
-     * Nếu chưa có full output cache,
-     * thử lấy structured profile từ Redis để tránh query nhiều bảng.
-     */
-    let structuredProfile =
-      await this.companyProfileCache.getStructuredProfile(userId);
-
-    let structuredProfileCacheHit = true;
-
-    if (!structuredProfile) {
-      structuredProfileCacheHit = false;
-
-      const profile =
-        await this.researchDataRepo.getCompanyProfileByUser(userId);
-
-      structuredProfile = {
-        companyId: profile.companyId,
-        companyName: profile.companyName,
-        website: profile.website,
-
-        documentsAi: profile.documentsAi,
-        productInfor: profile.productInfor,
-        products: profile.products,
-
-        partners: profile.partners,
-        competitors: profile.competitors,
-      };
-
-      await this.companyProfileCache.setStructuredProfile({
-        userId,
-        profile: structuredProfile,
-      });
-    }
-
-    /**
-     * Profile embedding context vẫn phụ thuộc query/focus_on.
-     * Nếu full output cache miss thì cần search embedding lại để context đúng hơn.
-     */
     const query = [
       input.researchInput.name,
       input.researchInput.url,
@@ -116,6 +143,8 @@ export class CompanyProfileDbAgent implements BaseAgent {
       ...structuredProfile,
       profileEmbeddingContext,
 
+      profileHash: latestProfileHash,
+
       cacheHit: false,
       structuredProfileCacheHit,
       cacheSource: structuredProfileCacheHit
@@ -123,13 +152,11 @@ export class CompanyProfileDbAgent implements BaseAgent {
         : 'database',
     };
 
-    /**
-     * Lưu full output để lần sau cùng search input trả nhanh nhất.
-     */
     await this.companyProfileCache.setAgentOutput({
       userId,
       input: input.researchInput,
       normalizedOutput,
+      profileHash: latestProfileHash,
     });
 
     return {
@@ -140,6 +167,7 @@ export class CompanyProfileDbAgent implements BaseAgent {
           : 'database+tb_embeddings',
         cacheHit: false,
         structuredProfileCacheHit,
+        profileHash: latestProfileHash,
       },
       normalizedOutput,
       metadata: {

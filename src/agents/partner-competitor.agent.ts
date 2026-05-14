@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { AgentType } from '../common/enums/agent-type.enum';
 import { LlmService } from '../llm/llm.service';
@@ -13,6 +13,7 @@ import {
 @Injectable()
 export class PartnerCompetitorAgent implements BaseAgent {
   agentType = AgentType.PARTNER_COMPETITOR;
+  private readonly logger = new Logger(PartnerCompetitorAgent.name);
 
   constructor(
     private readonly researchDataRepo: ResearchDataRepository,
@@ -72,7 +73,16 @@ export class PartnerCompetitorAgent implements BaseAgent {
       targetCompany,
     });
 
+    const llmStartedAt = Date.now();
+
+    this.logger.log(
+      `[PartnerCompetitorStart] pipelineRunId=${input.pipelineRunId} researchCompanyId=${researchCompanyId} model=${model} level=${level} promptChars=${userPrompt.length} partnersCount=${
+        Array.isArray(profile.partners) ? profile.partners.length : 0
+      } competitorsCount=${Array.isArray(profile.competitors) ? profile.competitors.length : 0}`,
+    );
+
     const result = await this.llm.json({
+      label: 'PartnerCompetitor.main',
       provider: 'openai',
       model,
       level,
@@ -84,6 +94,12 @@ export class PartnerCompetitorAgent implements BaseAgent {
       temperature:
         level === 'simple' && model.includes('gpt-4o') ? 0.2 : undefined,
     });
+
+    this.logger.log(
+      `[PartnerCompetitorDone] pipelineRunId=${input.pipelineRunId} researchCompanyId=${researchCompanyId} took=${
+        Date.now() - llmStartedAt
+      }ms resultKeys=${Object.keys(result ?? {}).join(',')}`,
+    );
 
     const detailedPartnerAnalysis = this.ensurePartnerDisplayTextArray(
       this.asArray(result['3_partner_impact_analysis']),

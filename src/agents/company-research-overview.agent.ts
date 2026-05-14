@@ -230,10 +230,7 @@ export class CompanyResearchOverviewAgent implements BaseAgent {
       ? this.pplxSearch(`site:${domainFromUrl} "${params.companyName}"`, 5)
       : Promise.resolve<SearchResultItem[]>([]);
 
-    const nameSearchPromise = this.pplxSearch(
-      `"${params.companyName}" official website company technology financial initiatives`,
-      8,
-    );
+    const nameSearchPromise = this.pplxSearch(`"${params.companyName}"`, 5);
 
     const [websiteContent, urlResults, nameResults] = await Promise.all([
       websitePromise.catch((error) => {
@@ -250,116 +247,122 @@ export class CompanyResearchOverviewAgent implements BaseAgent {
       }),
     ]);
 
-    let sourceResults = this.mergeSearchResults(urlResults, nameResults);
+    const sourceResults = this.mergeSearchResults(urlResults, nameResults);
 
-    /**
-     * Fallback 1: nếu Perplexity search không trả source,
-     * dùng SerpAPI để lấy organic results.
-     */
-    if (sourceResults.length === 0) {
-      sourceResults = await this.serpApiSearch({
-        companyName: params.companyName,
-        websiteUrl: params.websiteUrl,
-        limit: 8,
-      }).catch((error) => {
-        this.logger.warn(`serpApiSearch failed: ${String(error)}`);
-        return [];
-      });
+    const combinedResults = this.buildCombinedResults({
+      websiteContent,
+      urlResults,
+      nameResults,
+    });
+
+    if (!combinedResults.trim()) {
+      this.logger.warn(
+        `[CONDUCT_RESEARCH] No search results found for ${params.companyName}. Cannot extract crawl data.`,
+      );
+
+      return {
+        officialWebsite: '',
+        corporateInitiatives: '',
+        triggerEvents: '',
+        techStack: '',
+        financialCapacity: '',
+        domain: domainSeed,
+        businessData: {},
+        debug: {
+          domainFromUrl,
+          sourceResults: [],
+          llmKeys: [],
+        },
+      };
     }
 
     const prompt = this.prompts.researchOverviewPrompt();
 
-    /**
-     * Attempt 1: gọi Perplexity có response_format.
-     */
     let llmResult = await this.llm.json({
       provider: 'perplexity',
       model: process.env.PERPLEXITY_MODEL ?? 'sonar-pro',
       system: prompt.system,
-      maxTokens: 2500,
+      maxTokens: 1200,
       responseFormat: this.researchOverviewResponseFormat(),
-      user: this.buildResearchOverviewUserPrompt({
+      user: this.prompts.researchOverviewUserPrompt({
         companyName: params.companyName,
-        websiteUrl: params.websiteUrl ?? '',
-        taxCode: params.taxCode ?? '',
-        domainFromUrl: domainFromUrl ?? '',
-        websiteContent,
-        sourceResults,
+        combinedResults,
       }),
     });
 
-    /**
-     * Attempt 2: nếu schema mode trả rỗng, gọi lại không response_format.
-     * Nhiều lúc sonar-pro trả tốt hơn khi không ép json_schema.
-     */
-    if (this.isEmptyResearchLlmResult(llmResult)) {
+    const requiredFields = [
+      'corporate_initiatives',
+      'trigger_events',
+      'tech_stack',
+      'financial_capacity',
+    ];
+
+    const missingFields = requiredFields.filter(
+      (field) => !this.asString(llmResult?.[field]),
+    );
+
+    if (missingFields.length > 0) {
       this.logger.warn(
-        `Research overview schema response is empty. Retrying without response_format. company=${params.companyName}`,
+        `[CONDUCT_RESEARCH] Missing or empty fields for ${params.companyName}: ${missingFields.join(
+          ', ',
+        )}. Attempting fallback enrichment...`,
       );
 
-      llmResult = await this.llm.json({
-        provider: 'perplexity',
-        model: process.env.PERPLEXITY_MODEL ?? 'sonar-pro',
-        system: prompt.system,
-        maxTokens: 2500,
-        user: this.buildResearchOverviewUserPrompt({
-          companyName: params.companyName,
-          websiteUrl: params.websiteUrl ?? '',
-          taxCode: params.taxCode ?? '',
-          domainFromUrl: domainFromUrl ?? '',
-          websiteContent,
-          sourceResults,
-        }),
-      });
-    }
+      try {
+        const fallbackPrompt = `You are a business research assistant. For the company "${params.companyName}", provide information for these missing fields:
 
-    /**
-     * Attempt 3: nếu vẫn rỗng, ép prompt đơn giản hơn.
-     */
-    if (this.isEmptyResearchLlmResult(llmResult)) {
-      this.logger.warn(
-        `Research overview raw response is empty. Retrying simplified prompt. company=${params.companyName}`,
-      );
+Missing fields: ${missingFields.join(', ')}
 
-      llmResult = await this.llm.json({
-        provider: 'perplexity',
-        model: process.env.PERPLEXITY_MODEL ?? 'sonar-pro',
-        system: `
-You are a company research agent.
-Return ONLY JSON with:
+Based on available information, provide substantive content (4-5 sentences each) for the missing fields in JSON format:
 {
-  "official_website": "",
-  "corporate_initiatives": "",
-  "trigger_events": "",
-  "tech_stack": "",
-  "financial_capacity": "",
-  "domain": [],
-  "business_data": {}
+  "corporate_initiatives": "...",
+  "trigger_events": "...",
+  "tech_stack": "...",
+  "financial_capacity": "..."
 }
-Do not return empty fields unless no public information exists.
-`,
-        maxTokens: 1800,
-        user: JSON.stringify({
-          company_name: params.companyName,
-          website_url: params.websiteUrl ?? '',
-          search_results: sourceResults,
-          website_content: this.truncate(websiteContent, 5000),
-        }),
-      });
+
+If you cannot find information for a field, leave it as an empty string "".
+Return ONLY valid JSON.
+`;
+
+        const fallbackResult = await this.llm.json({
+          provider: 'perplexity',
+          model: process.env.PERPLEXITY_MODEL ?? 'sonar-pro',
+          system:
+            'You are a business research assistant. Return only valid JSON with no explanations.',
+          maxTokens: 1200,
+          responseFormat: this.researchOverviewResponseFormat(),
+          user: fallbackPrompt,
+        });
+
+        if (fallbackResult && typeof fallbackResult === 'object') {
+          for (const field of missingFields) {
+            if (!this.asString(llmResult?.[field])) {
+              llmResult[field] = fallbackResult[field] ?? '';
+            }
+          }
+
+          this.logger.log(
+            `[CONDUCT_RESEARCH] Fallback enrichment helped for ${params.companyName}: ${missingFields.join(
+              ', ',
+            )}`,
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          `[CONDUCT_RESEARCH] Fallback enrichment failed for ${params.companyName}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     const officialWebsite =
-      this.asString(llmResult.official_website) ||
-      params.websiteUrl ||
-      this.firstValidLink(sourceResults) ||
-      '';
+      this.asString(llmResult.official_website) || params.websiteUrl || '';
 
-    const mergedDomains = this.normalizeDomains([
-      ...domainSeed,
-      officialWebsite,
-      ...(Array.isArray(llmResult.domain) ? llmResult.domain : []),
-      ...sourceResults.map((item) => item.link),
-    ]);
+    const aiDomain = this.extractDomain(officialWebsite || '');
+
+    const mergedDomains = this.normalizeDomains([...domainSeed, aiDomain]);
 
     const result: ConductResearchResult = {
       officialWebsite,
@@ -370,19 +373,14 @@ Do not return empty fields unless no public information exists.
       techStack: this.sanitizeNarrative(llmResult.tech_stack),
       financialCapacity: this.sanitizeNarrative(llmResult.financial_capacity),
       domain: mergedDomains,
-      businessData: {
-        ...(this.isPlainObject(llmResult.business_data)
-          ? llmResult.business_data
-          : {}),
-        official_website: officialWebsite,
-        source_results: sourceResults,
-        source_summary: {
-          website_content_chars: websiteContent.length,
-          url_search_count: urlResults.length,
-          name_search_count: nameResults.length,
-          total_source_count: sourceResults.length,
-        },
-      },
+
+      /**
+       * Python cũ:
+       * business_data = business_service.get_info_from_tin(tax_code) if tax_code else {}
+       * Hiện TS chưa có business_service tương đương, nên tạm để {} để giống case không có tax_code.
+       */
+      businessData: {},
+
       debug: {
         domainFromUrl,
         sourceResults,
@@ -390,10 +388,21 @@ Do not return empty fields unless no public information exists.
       },
     };
 
-    if (this.isEmptyOverview(result)) {
-      this.logger.error(
-        `conductFullResearch produced empty overview after retries. company=${params.companyName}, sources=${sourceResults.length}, websiteChars=${websiteContent.length}`,
-      );
+    const minContentLength = 50;
+
+    for (const field of [
+      'corporateInitiatives',
+      'triggerEvents',
+      'techStack',
+      'financialCapacity',
+    ] as const) {
+      const content = result[field];
+
+      if (content && content.trim().length < minContentLength) {
+        this.logger.warn(
+          `[CONDUCT_RESEARCH] Field '${field}' for ${params.companyName} is too short (${content.trim().length} chars). This may indicate insufficient research data.`,
+        );
+      }
     }
 
     return result;
@@ -641,6 +650,45 @@ Do not return empty fields unless no public information exists.
     }
   }
 
+  private formatSearchResults(results: SearchResultItem[]): string {
+    return results
+      .slice(0, 3)
+      .map((item) => {
+        return `Source URL: ${item.link}
+Title: ${item.title}
+Content: ${(item.snippet || '').slice(0, 200)}`;
+      })
+      .join('\n\n');
+  }
+
+  private buildCombinedResults(params: {
+    websiteContent: string;
+    urlResults: SearchResultItem[];
+    nameResults: SearchResultItem[];
+  }): string {
+    let combinedResults = '';
+
+    if (params.websiteContent) {
+      combinedResults +=
+        '=== Website Content ===\n' + params.websiteContent + '\n\n';
+    }
+
+    if (params.urlResults.length > 0) {
+      combinedResults +=
+        '=== URL-based search ===\n' +
+        this.formatSearchResults(params.urlResults) +
+        '\n\n';
+    }
+
+    if (params.nameResults.length > 0) {
+      combinedResults +=
+        '=== Name-based search ===\n' +
+        this.formatSearchResults(params.nameResults);
+    }
+
+    return combinedResults;
+  }
+
   private searchResponseFormat() {
     return {
       type: 'json_schema',
@@ -686,22 +734,12 @@ Do not return empty fields unless no public information exists.
             trigger_events: { type: 'string' },
             tech_stack: { type: 'string' },
             financial_capacity: { type: 'string' },
-            domain: {
-              type: 'array',
-              items: { type: 'string' },
-            },
-            business_data: {
-              type: 'object',
-            },
           },
           required: [
-            'official_website',
             'corporate_initiatives',
             'trigger_events',
             'tech_stack',
             'financial_capacity',
-            'domain',
-            'business_data',
           ],
         },
       },
@@ -745,31 +783,6 @@ Do not return empty fields unless no public information exists.
         },
       },
     };
-  }
-
-  private buildResearchOverviewUserPrompt(params: {
-    companyName: string;
-    websiteUrl: string;
-    taxCode: string;
-    domainFromUrl: string;
-    websiteContent: string;
-    sourceResults: SearchResultItem[];
-  }) {
-    return JSON.stringify({
-      company_name: params.companyName,
-      website_url: params.websiteUrl,
-      tax_code: params.taxCode,
-      website_domain: params.domainFromUrl,
-      website_content: this.truncate(params.websiteContent, 8000),
-      search_results: params.sourceResults,
-      instruction: `
-Analyze this company and return complete crawl_data.
-You must fill corporate_initiatives, trigger_events, tech_stack, and financial_capacity.
-Use website_content and search_results.
-If exact data is limited, infer carefully from public evidence and clearly state uncertainty.
-Do not return empty strings unless absolutely no information exists.
-`,
-    });
   }
 
   private isEmptyOverview(overview: ConductResearchResult) {

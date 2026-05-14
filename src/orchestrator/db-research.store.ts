@@ -551,6 +551,16 @@ export class DbResearchStore {
       };
     });
 
+    const liveFinalOutputJson = this.buildLiveFinalOutputJson({
+      pipelineRun,
+      tasks,
+      outputs,
+    });
+
+    const hasAnyVisibleOutput = outputs.some(
+      (output) => output.agentType !== AgentType.COMPANY_PROFILE_DB,
+    );
+
     return {
       pipelineRunId: pipelineRun.id,
       batchId: pipelineRun.batchId,
@@ -612,15 +622,27 @@ export class DbResearchStore {
         title: this.formatAgentTitle(output.agentType),
         createdAt: output.createdAt,
         latencyMs: output.latencyMs,
+
+        normalizedOutputJson: output.normalizedOutputJson,
       })),
 
-      finalOutputReady: Boolean(pipelineRun.finalOutputJson),
+      finalOutputReady: hasAnyVisibleOutput,
 
-      finalOutputJson: pipelineRun.finalOutputJson ?? null,
+      /**
+       * Live finalOutputJson:
+       * Có agent nào xong thì section đó có data ngay.
+       * Agent lỗi/chưa xong thì section đó là {}.
+       */
+      finalOutputJson: liveFinalOutputJson,
+
+      /**
+       * Nếu cần debug finalOutputJson đã persist trong DB.
+       */
+      persistedFinalOutputJson: pipelineRun.finalOutputJson ?? null,
 
       result: {
-        finalOutputReady: Boolean(pipelineRun.finalOutputJson),
-        finalOutputJson: pipelineRun.finalOutputJson ?? null,
+        finalOutputReady: hasAnyVisibleOutput,
+        finalOutputJson: liveFinalOutputJson,
       },
     };
   }
@@ -772,6 +794,105 @@ export class DbResearchStore {
         userId: params.userId,
         status: params.status ?? null,
         mode: params.mode ?? null,
+      },
+    };
+  }
+
+  private buildLiveFinalOutputJson(params: {
+    pipelineRun: ResearchPipelineRunEntity;
+    tasks: ResearchAgentTaskEntity[];
+    outputs: ResearchAgentOutputEntity[];
+  }) {
+    const { pipelineRun, tasks, outputs } = params;
+
+    const outputByAgent = new Map<string, ResearchAgentOutputEntity>();
+
+    for (const output of outputs) {
+      outputByAgent.set(String(output.agentType), output);
+    }
+
+    const taskByAgent = new Map<string, ResearchAgentTaskEntity>();
+
+    for (const task of tasks) {
+      taskByAgent.set(String(task.agentType), task);
+    }
+
+    const getData = (agentType: AgentType) => {
+      return outputByAgent.get(agentType)?.normalizedOutputJson ?? {};
+    };
+
+    const getStatus = (agentType: AgentType) => {
+      const task = taskByAgent.get(agentType);
+
+      return {
+        agentType,
+        status: task?.status ?? 'NOT_INCLUDED',
+        hasOutput: Boolean(outputByAgent.get(agentType)),
+        errorJson: task?.errorJson ?? null,
+        required: task?.required ?? null,
+        startedAt: task?.startedAt ?? null,
+        completedAt: task?.completedAt ?? null,
+      };
+    };
+
+    const completedAgents = outputs.map((output) => output.agentType);
+
+    const failedAgents = tasks
+      .filter((task) => task.status === AgentTaskStatus.FAILED)
+      .map((task) => task.agentType);
+
+    const runningAgents = tasks
+      .filter((task) => task.status === AgentTaskStatus.RUNNING)
+      .map((task) => task.agentType);
+
+    const pendingAgents = tasks
+      .filter((task) =>
+        [
+          AgentTaskStatus.PENDING,
+          AgentTaskStatus.READY,
+          AgentTaskStatus.RETRYING,
+        ].includes(task.status as AgentTaskStatus),
+      )
+      .map((task) => task.agentType);
+
+    return {
+      overview: getData(AgentType.COMPANY_RESEARCH_OVERVIEW),
+
+      analysis: getData(AgentType.THREE_WHYS_MEDDPIC),
+
+      partnerCompetitorInsight: getData(AgentType.PARTNER_COMPETITOR),
+
+      contact: getData(AgentType.CONTACT_ENRICHMENT),
+
+      scoring: getData(AgentType.SCORING),
+
+      metadata: {
+        pipelineRunId: pipelineRun.id,
+        batchId: pipelineRun.batchId,
+        mode: pipelineRun.mode,
+        requestedTools: pipelineRun.inputJson?.selected_tools ?? ['ALL'],
+        researchCompanyId: pipelineRun.researchCompanyId,
+
+        isFinal: this.isTerminalPipelineStatus(pipelineRun.status),
+        generatedAt: new Date().toISOString(),
+
+        completedAgents,
+        failedAgents,
+        runningAgents,
+        pendingAgents,
+
+        agentStatus: {
+          companyProfile: getStatus(AgentType.COMPANY_PROFILE_DB),
+          overview: getStatus(AgentType.COMPANY_RESEARCH_OVERVIEW),
+          analysis: getStatus(AgentType.THREE_WHYS_MEDDPIC),
+          partnerCompetitorInsight: getStatus(AgentType.PARTNER_COMPETITOR),
+          contact: getStatus(AgentType.CONTACT_ENRICHMENT),
+          scoring: getStatus(AgentType.SCORING),
+        },
+
+        internal: {
+          companyProfile: getData(AgentType.COMPANY_PROFILE_DB),
+        },
       },
     };
   }

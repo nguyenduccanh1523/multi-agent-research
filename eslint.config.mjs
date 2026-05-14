@@ -37,6 +37,8 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-enum-comparison': 'off',
       '@typescript-eslint/await-thenable': 'off',
       '@typescript-eslint/require-await': 'off',
+      'prefer-const': 'off',
+      'no-useless-escapes': 'off',
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
